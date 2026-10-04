@@ -1,0 +1,29 @@
+{
+  "name": "fryday-foodsquare",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Fryday storefront and ordering backend",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "start": "npm run build && node server/index.js",
+    "dev": "concurrently -k \"node --watch server/index.js\" \"vite --host 0.0.0.0\"",
+    "build": "vite build",
+    "test": "node --test"
+  },
+  "dependencies": {
+    "cloudinary": "^2.11.0",
+    "dotenv": "^16.6.1",
+    "express": "^5.1.0",
+    "multer": "^2.4.0",
+    "nodemailer": "^10.0.14",
+    "pdfkit": "^0.17.2",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0"
+  },
+  "devDependencies": {
+    "concurrently": "^10.0.5",
+    "vite": "^8.3.2"
+  }
+}
