@@ -353,6 +353,47 @@ test("email notifier reports missing SMTP credentials instead of claiming delive
     }), { sent: false, reason: "not_configured" });
 });
 
+test("email notifier sends through Resend's HTTPS API with the verified sender", async () => {
+    const requests = [];
+    const notifier = createOrderNotifier({
+        env: {
+            RESEND_API_KEY: "re_test_key",
+            RESEND_FROM: "Fryday Orders <orders@verified.example>",
+            SMTP_FROM: "old-sender@example.test"
+        },
+        fetchImpl: async (url, options) => {
+            requests.push({ url, options });
+            return new Response(JSON.stringify(
+                url.endsWith("/domains") ? { data: [] } : { id: "resend-message-id" }
+            ), { status: 200 });
+        }
+    });
+
+    assert.equal(notifier.configured, true);
+    assert.equal(await notifier.verify(), true);
+    const result = await notifier.sendPasswordReset(
+        "customer@example.test",
+        "https://food.example.test/?resetToken=token"
+    );
+
+    assert.deepEqual(result, { sent: true, messageId: "resend-message-id" });
+    assert.equal(requests[0].url, "https://api.resend.com/domains");
+    assert.equal(requests[0].options.headers.Authorization, "Bearer re_test_key");
+    assert.equal(requests[1].url, "https://api.resend.com/emails");
+    const message = JSON.parse(requests[1].options.body);
+    assert.equal(message.from, "Fryday Orders <orders@verified.example>");
+    assert.equal(message.to, "customer@example.test");
+    assert.equal(message.subject, "Reset your Fryday password");
+});
+
+test("Resend configuration requires both an API key and verified sender address", () => {
+    const notifier = createOrderNotifier({
+        env: { RESEND_API_KEY: "re_test_key" }
+    });
+
+    assert.equal(notifier.configured, false);
+});
+
 test("password reset mail contains a bounded-use link", async () => {
     const messages = [];
     const notifier = createOrderNotifier({

@@ -16,18 +16,77 @@ function formatAmount(amount) {
     return `NGN ${new Intl.NumberFormat("en-NG", { maximumFractionDigits: 0 }).format(amount)}`;
 }
 
-function createOrderNotifier({ env = process.env, transporter: suppliedTransporter } = {}) {
+function emailFailureStatus(error, fallback = "send_failed") {
+    return error.code === "EAUTH" || error.responseCode === 535
+        || error.statusCode === 401 || error.statusCode === 403
+        ? "authentication_failed"
+        : fallback;
+}
+
+function createResendTransporter(apiKey, fetchImpl) {
+    async function request(endpoint, options = {}) {
+        const response = await fetchImpl(`https://api.resend.com${endpoint}`, {
+            ...options,
+            headers: {
+                Authorization: `Bearer ${apiKey}`,
+                ...(options.body ? { "Content-Type": "application/json" } : {}),
+                ...options.headers
+            },
+            signal: AbortSignal.timeout(12000)
+        });
+        const body = await response.text();
+        let result = {};
+        if (body) {
+            try {
+                result = JSON.parse(body);
+            } catch {
+                throw new Error("Resend returned an invalid response.");
+            }
+        }
+        if (!response.ok) {
+            const error = new Error(result.message || `Resend API request failed (HTTP ${response.status}).`);
+            error.statusCode = response.status;
+            if (response.status === 401 || response.status === 403) error.code = "EAUTH";
+            throw error;
+        }
+        return result;
+    }
+
+    return {
+        async verify() {
+            await request("/domains");
+        },
+        async sendMail(message) {
+            const result = await request("/emails", {
+                method: "POST",
+                body: JSON.stringify(message)
+            });
+            if (typeof result.id !== "string" || !result.id) {
+                throw new Error("Resend did not return an email ID.");
+            }
+            return { messageId: result.id };
+        }
+    };
+}
+
+function createOrderNotifier({ env = process.env, transporter: suppliedTransporter, fetchImpl = fetch } = {}) {
     const port = Number(env.SMTP_PORT);
     const password = typeof env.SMTP_PASS === "string" ? env.SMTP_PASS.replace(/\s/g, "") : "";
+    const resendApiKey = typeof env.RESEND_API_KEY === "string" ? env.RESEND_API_KEY.trim() : "";
+    const resendFrom = typeof env.RESEND_FROM === "string" ? env.RESEND_FROM.trim() : "";
+    const resendSelected = Boolean(resendApiKey);
+    const fromAddress = resendSelected ? resendFrom : env.SMTP_FROM || env.SMTP_USER;
     const smtpConfigured = Boolean(
         env.SMTP_HOST && env.SMTP_USER && password
         && Number.isInteger(port) && port > 0 && port <= 65535
     );
-    const transporter = suppliedTransporter || (smtpConfigured
+    const emailConfigured = resendSelected ? Boolean(resendApiKey && resendFrom) : smtpConfigured;
+    const transporter = suppliedTransporter || (resendSelected && emailConfigured
+        ? createResendTransporter(resendApiKey, fetchImpl)
+        : !resendSelected && smtpConfigured
         ? nodemailer.createTransport({
             host: env.SMTP_HOST,
             port,
-            family: 4,
             secure: env.SMTP_SECURE === "true" || port === 465,
             auth: { user: env.SMTP_USER, pass: password },
             connectionTimeout: 8000,
@@ -44,16 +103,14 @@ function createOrderNotifier({ env = process.env, transporter: suppliedTransport
         get status() {
             return connectionStatus;
         },
-        async verify() {
+        async         verify() {
             if (!transporter) return false;
             try {
-                await transporter.verify();
+                if (typeof transporter.verify === "function") await transporter.verify();
                 connectionStatus = "connected";
                 return true;
             } catch (error) {
-                connectionStatus = error.code === "EAUTH" || error.responseCode === 535
-                    ? "authentication_failed"
-                    : "connection_failed";
+                connectionStatus = emailFailureStatus(error, "connection_failed");
                 throw error;
             }
         },
@@ -62,7 +119,7 @@ function createOrderNotifier({ env = process.env, transporter: suppliedTransport
 
             const safeUrl = escapeHtml(resetUrl);
             const info = await transporter.sendMail({
-                from: env.SMTP_FROM || env.SMTP_USER,
+                from: fromAddress,
                 to: email,
                 subject: "Reset your Fryday password",
                 text: `Use this link to reset your Fryday password. It expires in 30 minutes.\n\n${resetUrl}\n\nIf you do not see this email in your inbox, check your spam or junk folder. If you did not request this, you can ignore this email.`,
@@ -84,7 +141,7 @@ function createOrderNotifier({ env = process.env, transporter: suppliedTransport
 
             const safeUrl = escapeHtml(verificationUrl);
             const info = await transporter.sendMail({
-                from: env.SMTP_FROM || env.SMTP_USER,
+                from: fromAddress,
                 to: email,
                 subject: "Verify your Fryday email",
                 text: `Verify your Fryday email address using this link. It expires in 24 hours.\n\n${verificationUrl}\n\nIf you did not create this account, you can ignore this email.`,
@@ -138,7 +195,7 @@ function createOrderNotifier({ env = process.env, transporter: suppliedTransport
                 : "";
 
             const info = await transporter.sendMail({
-                from: env.SMTP_FROM || env.SMTP_USER,
+                from: fromAddress,
                 to: recipient,
                 subject: `New Fryday order #${order.id}`,
                 text,
@@ -160,9 +217,7 @@ function createOrderNotifier({ env = process.env, transporter: suppliedTransport
                     <strong>Total: ${formatAmount(order.total)}</strong></p>
                 `
             }).catch((error) => {
-                connectionStatus = error.code === "EAUTH" || error.responseCode === 535
-                    ? "authentication_failed"
-                    : "send_failed";
+                connectionStatus = emailFailureStatus(error);
                 throw error;
             });
 
@@ -174,7 +229,7 @@ function createOrderNotifier({ env = process.env, transporter: suppliedTransport
 
             const status = order.status[0].toUpperCase() + order.status.slice(1);
             const info = await transporter.sendMail({
-                from: env.SMTP_FROM || env.SMTP_USER,
+                from: fromAddress,
                 to: email,
                 subject: `Fryday order #${order.id} update: ${status}`,
                 text: `Hi ${order.customerName},\n\nYour Fryday order #${order.id} is now ${order.status}.\n\nThank you for ordering with Fryday.`,
@@ -185,9 +240,7 @@ function createOrderNotifier({ env = process.env, transporter: suppliedTransport
                     <p>Thank you for ordering with Fryday.</p>
                 `
             }).catch((error) => {
-                connectionStatus = error.code === "EAUTH" || error.responseCode === 535
-                    ? "authentication_failed"
-                    : "send_failed";
+                connectionStatus = emailFailureStatus(error);
                 throw error;
             });
 

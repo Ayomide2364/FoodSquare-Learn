@@ -1137,12 +1137,14 @@ if (require.main === module) {
     const port = Number(process.env.PORT) || 3000;
     if (orderNotifier.configured) {
         orderNotifier.verify().then(() => {
-            console.log(`Order email notifications are connected for ${orderNotifier.recipient}.`);
+            const provider = process.env.RESEND_API_KEY ? "Resend" : "SMTP";
+            console.log(`Order email notifications are connected through ${provider} for ${orderNotifier.recipient}.`);
         }).catch((error) => {
-            console.error("Order email SMTP verification failed:", error.message);
+            const provider = process.env.RESEND_API_KEY ? "Resend" : "SMTP";
+            console.error(`${provider} email verification failed:`, error.message);
         });
     } else {
-        console.warn("Order email notifications are not configured. Copy .env.example to .env and add SMTP credentials.");
+        console.warn("Order email notifications are not configured. Set Resend API credentials or SMTP credentials.");
     }
     app.listen(port, () => {
         console.log(`Fryday is ready at http://localhost:${port}`);
