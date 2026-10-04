@@ -27,6 +27,7 @@ function createOrderNotifier({ env = process.env, transporter: suppliedTransport
         ? nodemailer.createTransport({
             host: env.SMTP_HOST,
             port,
+            family: 4,
             secure: env.SMTP_SECURE === "true" || port === 465,
             auth: { user: env.SMTP_USER, pass: password },
             connectionTimeout: 8000,
